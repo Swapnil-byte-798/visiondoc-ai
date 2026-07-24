@@ -1,0 +1,76 @@
+# ===========================================================================
+# VisionDoc AI — core runtime dependencies
+# ---------------------------------------------------------------------------
+# Version floors (>=) are chosen for compatibility with Qwen2.5-VL, which
+# requires a recent Transformers (>=4.49) that ships the Qwen2.5-VL classes.
+# We pin floors rather than exact versions so the project stays installable as
+# the ecosystem moves, while still guaranteeing the APIs we rely on exist.
+#
+# GPU note: install the CUDA build of torch that matches your driver, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# `bitsandbytes` is CUDA-only; it is a no-op / skipped on macOS + CPU.
+# ===========================================================================
+
+# --- Deep learning core ---------------------------------------------------
+torch>=2.2.0
+torchvision>=0.17.0
+transformers>=4.49.0
+accelerate>=0.34.0
+peft>=0.13.0
+datasets>=2.20.0
+safetensors>=0.4.3
+
+# --- Qwen2.5-VL helpers ---------------------------------------------------
+# Handles vision preprocessing (dynamic resolution, smart-resize) for Qwen-VL.
+qwen-vl-utils>=0.0.8
+
+# --- Quantization / optimization (CUDA-only extras are optional) ----------
+bitsandbytes>=0.43.0 ; platform_system == "Linux"
+optimum>=1.21.0
+
+# --- Vision / image I/O ---------------------------------------------------
+Pillow>=10.3.0
+opencv-python-headless>=4.9.0
+numpy>=1.26.0,<2.2.0
+
+# --- PDF & OCR fallback ---------------------------------------------------
+PyMuPDF>=1.24.0          # fast native PDF -> image rasterization
+pdf2image>=1.17.0        # poppler-backed fallback
+pytesseract>=0.3.10      # OCR fallback when the VLM abstains
+
+# --- Metrics & evaluation -------------------------------------------------
+evaluate>=0.4.2
+scikit-learn>=1.4.0
+nltk>=3.8.1
+rouge-score>=0.1.2
+sacrebleu>=2.4.0
+Levenshtein>=0.25.0      # ANLS (normalized Levenshtein) for DocVQA
+
+# --- Data / analysis ------------------------------------------------------
+pandas>=2.2.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# --- Experiment tracking --------------------------------------------------
+wandb>=0.17.0
+
+# --- Serving --------------------------------------------------------------
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9  # multipart/form-data file uploads
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# --- Dashboard ------------------------------------------------------------
+# 1.40+ required for st.image(use_container_width=...) used in app/streamlit_app.py
+streamlit>=1.40.0
+
+# --- ONNX runtime (bonus: export + accelerated CPU inference) -------------
+onnx>=1.16.0
+onnxruntime>=1.18.0
+
+# --- Utilities ------------------------------------------------------------
+PyYAML>=6.0.1
+python-dotenv>=1.0.1
+tqdm>=4.66.0
+rich>=13.7.0             # pretty CLI logging / tables

@@ -1,0 +1,77 @@
+# ===========================================================================
+# VisionDoc AI — packaging & tooling configuration
+# We expose the codebase as an installable package (`pip install -e .`) so that
+# every module can use absolute imports (`from visiondoc.models import ...`)
+# regardless of the current working directory — critical for reproducible
+# training runs launched by `accelerate`/`torchrun` from arbitrary paths.
+# ===========================================================================
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visiondoc-ai"
+version = "0.1.0"
+description = "Fine-tuning a Vision-Language Model with LoRA for document intelligence"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Swapnil Dwivedi" }]
+keywords = ["vlm", "lora", "peft", "document-ai", "qwen2.5-vl", "docvqa"]
+
+# Runtime deps are managed in requirements.txt to keep CUDA/index-url control;
+# we mirror the import-critical ones here for `pip install -e .` convenience.
+dependencies = [
+    "torch>=2.2.0",
+    "transformers>=4.49.0",
+    "peft>=0.13.0",
+    "accelerate>=0.34.0",
+    "datasets>=2.20.0",
+    "Pillow>=10.3.0",
+    "numpy>=1.26.0,<2.2.0",
+    "PyYAML>=6.0.1",
+    "pydantic>=2.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Swapnil-byte-798/visiondoc-ai"
+Repository = "https://github.com/Swapnil-byte-798/visiondoc-ai"
+
+# The project is organized as top-level packages (models/, training/, ...).
+# We map them under a single import namespace to avoid collisions with common
+# names like `models` or `utils` in a shared environment.
+[tool.setuptools]
+packages = [
+    "configs", "preprocessing", "models", "training", "evaluation",
+    "inference", "research", "visualization", "api", "app", "utils",
+    "scripts",
+]
+
+[project.scripts]
+visiondoc-train = "training.train:main"
+visiondoc-eval = "evaluation.evaluate:main"
+visiondoc-download = "scripts.download_data:main"
+
+# --- Tooling ---------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F pyflakes+pycodestyle, I import-sorting, UP pyupgrade, B bugbear.
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # line length handled by black
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true       # heavy ML libs ship partial/no stubs
+warn_unused_ignores = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

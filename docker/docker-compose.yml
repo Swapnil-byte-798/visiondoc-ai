@@ -1,0 +1,114 @@
+# ===========================================================================
+# VisionDoc AI — local/production compose stack
+# ---------------------------------------------------------------------------
+# Brings up two services from ONE image (built once, reused via the shared
+# `image:` tag so the app service does not rebuild):
+#   * api  — FastAPI inference server on :8000
+#   * app  — Streamlit dashboard on :8501 (talks to the model directly, and to
+#            the API when it needs a remote call)
+#
+# Run:
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# Note: the Compose spec no longer requires a top-level `version:` key; it is
+# intentionally omitted (modern `docker compose` warns that it is obsolete).
+# ===========================================================================
+
+services:
+  api:
+    build:
+      # Context is the repo root (..) so the Dockerfile can COPY the whole
+      # project; the Dockerfile itself lives under docker/.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: visiondoc-ai:latest
+    container_name: visiondoc-api
+    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    # env_file is optional-by-convention; create it from .env.example. Compose
+    # errors if it is missing, so keep a `.env` at the repo root (git-ignored).
+    env_file:
+      - ../.env
+    environment:
+      # Sensible in-container defaults; overridden by .env when present.
+      - VISIONDOC_CONFIG=configs/default.yaml
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      # Persist artifacts and processed data on the host so they survive
+      # rebuilds and are shareable between the two services.
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../reports:/app/reports
+      # Named volume for the multi-GB HF weights cache — avoids re-downloading
+      # the VLM on every container start.
+      - hf-cache:/app/.cache/huggingface
+    healthcheck:
+      # /health returns model/adapter/device info once the singleton is built.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous start_period: first request lazily loads a multi-GB VLM.
+      start_period: 180s
+    restart: unless-stopped
+    networks:
+      - visiondoc
+    # --- GPU (uncomment to train / run inference on NVIDIA GPUs) -----------
+    # Requires the NVIDIA Container Toolkit on the host AND a CUDA-based image
+    # (see the GPU alternative in docker/Dockerfile). Then set device: cuda in
+    # your config.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  app:
+    # Reuse the exact image built by the `api` service (same tag) instead of
+    # building a second time. depends_on ensures `api` builds first.
+    image: visiondoc-ai:latest
+    container_name: visiondoc-app
+    command: ["python", "-m", "streamlit", "run", "app/streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
+    ports:
+      - "8501:8501"
+    env_file:
+      - ../.env
+    environment:
+      - VISIONDOC_CONFIG=configs/default.yaml
+      # Where the dashboard reaches the API service on the compose network.
+      - VISIONDOC_API_URL=http://api:8000
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - hf-cache:/app/.cache/huggingface
+    depends_on:
+      # Wait for the API to be built + healthy so a first-time `up` builds the
+      # shared image once and the dashboard's API calls succeed.
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - visiondoc
+    # --- GPU (see note on the api service above) --------------------------
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+# Explicit user-defined bridge network so the two services can resolve each
+# other by name (e.g. the dashboard calling http://api:8000).
+networks:
+  visiondoc:
+    driver: bridge
+
+volumes:
+  # Persists the Hugging Face model/weights cache across container restarts.
+  hf-cache:

@@ -1,0 +1,46 @@
+# ===========================================================================
+# VisionDoc AI — Donut on CORD (OCR-free, lightweight alternative backbone)
+# Demonstrates the swappable-backbone design: same pipeline, different model.
+# Donut is an encoder-decoder (VisionEncoderDecoder), not a causal LM, so its
+# adapter/target-modules differ from Qwen.
+# ===========================================================================
+name: visiondoc-ai-donut
+seed: 42
+device: auto
+
+model:
+  model_id: naver-clova-ix/donut-base
+  model_type: donut
+  torch_dtype: float32        # Donut is small; fp32 is fine and most stable
+  attn_implementation: eager
+  trust_remote_code: false
+  max_pixels: 802816
+
+lora:
+  r: 8
+  lora_alpha: 16
+  task_type: SEQ_2_SEQ_LM     # Donut decoder is seq2seq, not causal
+  # Let PEFT auto-target the linear layers of the BART-style decoder.
+  target_modules: null
+
+data:
+  dataset_name: cord
+  dataset_id: naver-clova-ix/cord-v2
+  dataset_subset: null
+  image_size: 1280
+  max_seq_length: 768
+  augment: true
+
+training:
+  output_dir: outputs/donut-cord-lora
+  num_train_epochs: 8.0
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-4
+  bf16: false
+  fp16: false
+  metric_for_best_model: eval_f1
+  run_name: donut-cord-lora
+
+inference:
+  max_new_tokens: 512
