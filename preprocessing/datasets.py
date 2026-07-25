@@ -201,11 +201,22 @@ def _hf_load(config: "ProjectConfig", hf_split: str) -> "hfds.Dataset":
         "Loading %s%s split=%s", config.data.dataset_id,
         f":{config.data.dataset_subset}" if config.data.dataset_subset else "", hf_split,
     )
+    # Load WITHOUT trust_remote_code first: DocVQA/CORD/most mirrors are standard
+    # Parquet datasets that need no script, and newer ``datasets`` releases log a
+    # hard error for trust_remote_code even when it is unnecessary (it is accepted,
+    # not a TypeError, so the old fallback never triggered). Only retry *with* the
+    # flag if the dataset genuinely turns out to be script-based (older datasets).
     try:
-        return load_dataset(*args, trust_remote_code=True, **kwargs)
-    except TypeError:
-        # ``trust_remote_code`` not accepted by this datasets version.
         return load_dataset(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it's the script case
+        msg = str(exc).lower()
+        if "trust_remote_code" in msg or "loading script" in msg or "trust remote code" in msg:
+            logger.info("Dataset appears script-based; retrying with trust_remote_code.")
+            try:
+                return load_dataset(*args, trust_remote_code=True, **kwargs)
+            except TypeError:
+                raise exc
+        raise
 
 
 def _load_docvqa(config: "ProjectConfig", hf_split: str) -> list[DocSample]:
