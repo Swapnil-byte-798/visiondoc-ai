@@ -16,6 +16,8 @@ Built end-to-end with PyTorch, Hugging Face Transformers, PEFT/LoRA and Qwen2.5-
 ![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-ff4b4b)
 ![License](https://img.shields.io/badge/license-MIT-black)
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Swapnil-byte-798/visiondoc-ai/blob/main/notebooks/00_colab_quickstart.ipynb)
+
 </div>
 
 ---
@@ -148,6 +150,30 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 Optional system tools: **tesseract-ocr** (region highlighting fallback) and **poppler-utils** (PDF).
 Copy `.env.example` → `.env` to configure W&B, Hugging Face token, and paths.
+
+---
+
+## ▶️ Run on Google Colab (free GPU)
+
+No local GPU? Run the full **train → evaluate → infer** loop on a free Colab **T4**:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Swapnil-byte-798/visiondoc-ai/blob/main/notebooks/00_colab_quickstart.ipynb)
+
+1. Click the badge → **Runtime → Change runtime type → T4 GPU**.
+2. Run the cells top to bottom. The notebook clones the repo, installs deps (reusing
+   Colab's CUDA PyTorch), and fine-tunes with **4-bit QLoRA** using
+   [`configs/colab_t4.yaml`](configs/colab_t4.yaml) — tuned for the T4 (fp16, not bf16;
+   small `max_pixels`; a fast CORD slice) so the whole loop runs in ~10–15 min.
+
+The same config also works from a terminal on any CUDA box:
+
+```bash
+python -m training.train  --config configs/colab_t4.yaml
+python -m evaluation.evaluate --config configs/colab_t4.yaml --adapter outputs/qwen2_5vl-cord-lora-colab/adapter --split test
+```
+
+To target **DocVQA** instead of CORD, copy `configs/colab_t4.yaml` and set
+`data.dataset_name: docvqa` / `dataset_id: lmms-lab/DocVQA` / `dataset_subset: DocVQA`.
 
 ---
 

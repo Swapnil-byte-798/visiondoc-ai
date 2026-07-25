@@ -1,0 +1,96 @@
+# ===========================================================================
+# VisionDoc AI — Google Colab (free T4 GPU) quickstart config
+# ---------------------------------------------------------------------------
+# Tuned so the FULL train -> evaluate -> infer loop finishes in ~10-15 min on a
+# Colab T4 (16 GB). Key T4 constraints handled here:
+#   * Turing T4 has NO bfloat16  -> we use fp16 (bf16: false, fp16: true).
+#   * 16 GB VRAM is tight for a 3B VLM + training -> 4-bit QLoRA (load_in_4bit)
+#     + gradient checkpointing + a small max_pixels budget.
+#   * We use CORD (tiny, ~1k receipts) so the dataset downloads in seconds and a
+#     full fine-tune is fast. To reproduce the DocVQA headline instead, copy this
+#     file and set data.dataset_name/dataset_id to DocVQA (much larger download).
+# ===========================================================================
+name: visiondoc-ai-colab-t4
+seed: 42
+device: auto
+
+model:
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  model_type: qwen2_5_vl
+  torch_dtype: float16        # T4 has no bf16; fp16 is the correct choice
+  attn_implementation: sdpa   # flash-attn needs Ampere+, not available on T4
+  trust_remote_code: true
+  load_in_4bit: true          # QLoRA: fits the 3B model on a 16 GB T4
+  load_in_8bit: false
+  min_pixels: 200704          # 256 * 28 * 28
+  max_pixels: 602112          # 768 * 28 * 28 — keep VRAM low for receipts
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  modules_to_save: null
+
+data:
+  dataset_name: cord
+  dataset_id: naver-clova-ix/cord-v2
+  dataset_subset: null
+  image_size: 768
+  max_seq_length: 768
+  train_split: train
+  val_split: validation
+  test_split: test
+  val_fraction: 0.1
+  test_fraction: 0.1
+  cache_dir: data/cache
+  raw_dir: data/raw
+  processed_dir: data/processed
+  num_workers: 2
+  augment: true
+  max_train_samples: 400      # quick demo; raise (or set null) for a real run
+  max_eval_samples: 100
+
+training:
+  output_dir: outputs/qwen2_5vl-cord-lora-colab
+  num_train_epochs: 1.0
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  fp16: true                  # <-- T4: fp16, not bf16
+  bf16: false
+  gradient_checkpointing: true
+  logging_steps: 5
+  eval_strategy: steps
+  eval_steps: 25
+  save_strategy: steps
+  save_steps: 25
+  save_total_limit: 1
+  load_best_model_at_end: true
+  metric_for_best_model: eval_f1   # no compute_metrics -> trainer falls back to eval_loss
+  greater_is_better: true
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  resume_from_checkpoint: null
+  report_to: none             # keep the Colab run quiet; set to wandb if you like
+  run_name: qwen2_5vl-cord-lora-colab
+  dataloader_num_workers: 2
+  seed: 42
+
+inference:
+  adapter_path: null          # set on the CLI: --adapter outputs/.../adapter
+  max_new_tokens: 256
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.9
+  num_beams: 1
+  batch_size: 4
+  return_attention: false
+  confidence_method: seq_prob
