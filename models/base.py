@@ -217,11 +217,39 @@ class VisionDocModel(ABC):
         logger.info("Saved adapter to %s", path)
 
     def load_adapter(self, path: str | Path) -> "VisionDocModel":
-        """Attach a previously trained LoRA adapter onto the loaded base model."""
+        """Attach a previously trained LoRA adapter onto the loaded base model.
+
+        ``path`` may be a local directory (produced by :meth:`save_adapter`) or a
+        Hugging Face Hub repo id (``namespace/name``). We validate a local path up
+        front: PEFT otherwise misreads a missing local path as a Hub repo id and
+        raises a confusing ``HFValidationError`` — the usual cause is running
+        evaluation/inference before training has finished writing the adapter.
+        """
+        import re
+
         from peft import PeftModel
 
         if self.model is None:
             raise RuntimeError("Call load() before load_adapter().")
+
+        p = Path(path)
+        if not p.exists():
+            # A bare "namespace/name" is a plausible Hub id — let PEFT try it.
+            is_hub_id = bool(re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", str(path)))
+            if not is_hub_id:
+                raise FileNotFoundError(
+                    f"LoRA adapter not found at '{path}'. Training writes the adapter to "
+                    f"<output_dir>/adapter only after it finishes — run training to "
+                    f"completion first, or pass a valid local path / Hub repo id. "
+                    f"(To evaluate the untuned base model, omit the adapter entirely.)"
+                )
+        elif not (p / "adapter_config.json").exists():
+            raise FileNotFoundError(
+                f"'{path}' exists but contains no adapter_config.json, so it is not a "
+                f"saved LoRA adapter. Point at the directory that holds adapter_config.json "
+                f"(e.g. <output_dir>/adapter or a checkpoint-*/ folder)."
+            )
+
         self.model = PeftModel.from_pretrained(self.model, str(path))
         self.model.to(self.device)
         self.model.eval()
