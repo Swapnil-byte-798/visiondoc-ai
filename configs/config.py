@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import yaml
 
@@ -264,6 +264,21 @@ def _replace(obj: Any, **changes: Any) -> Any:
     return replace(obj, **changes)
 
 
+def _resolve_field_types(cls: type) -> dict[str, Any]:
+    """Return field-name -> *actual* type for a dataclass.
+
+    ``from __future__ import annotations`` (used in this module) stores every
+    annotation as a STRING, so ``dataclasses.Field.type`` is e.g. ``"ModelConfig"``
+    rather than the class. ``get_type_hints`` evaluates those strings back into
+    real objects in the module's namespace, which is what lets us detect nested
+    dataclass fields below. We fall back to the raw ``.type`` if resolution fails.
+    """
+    try:
+        return get_type_hints(cls)
+    except Exception:  # pragma: no cover - only on exotic forward refs
+        return {f.name: f.type for f in fields(cls)}
+
+
 def _from_dict(cls: type, data: dict[str, Any]) -> Any:
     """Recursively build a (possibly nested) dataclass from a dict, strictly.
 
@@ -274,6 +289,7 @@ def _from_dict(cls: type, data: dict[str, Any]) -> Any:
     if not is_dataclass(cls):
         return data
     field_map = {f.name: f for f in fields(cls)}
+    hints = _resolve_field_types(cls)
     unknown = set(data) - set(field_map)
     if unknown:
         raise ValueError(
@@ -281,13 +297,17 @@ def _from_dict(cls: type, data: dict[str, Any]) -> Any:
             f"Valid keys: {sorted(field_map)}"
         )
     kwargs: dict[str, Any] = {}
-    for name, f in field_map.items():
+    for name in field_map:
         if name not in data:
             continue
         value = data[name]
-        # Recurse into nested dataclass fields (e.g. model:, lora:, ...).
-        if is_dataclass(f.type) and isinstance(value, dict):
-            kwargs[name] = _from_dict(f.type, value)  # type: ignore[arg-type]
+        # Recurse into nested dataclass fields (e.g. model:, lora:, ...). We use
+        # the *resolved* type (not Field.type, which is a string under
+        # `from __future__ import annotations`) so nested sections become real
+        # dataclasses instead of leaking through as raw dicts.
+        ftype = hints.get(name)
+        if is_dataclass(ftype) and isinstance(value, dict):
+            kwargs[name] = _from_dict(ftype, value)  # type: ignore[arg-type]
         else:
             kwargs[name] = value
     return cls(**kwargs)
