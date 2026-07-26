@@ -1,0 +1,93 @@
+# ===========================================================================
+# VisionDoc AI — Colab T4 FAST smoke fine-tune (~5 min after the model is cached)
+# ---------------------------------------------------------------------------
+# Purpose: complete the ENTIRE train -> save adapter -> evaluate -> compare loop
+# as fast as possible so you can see a real fine-tuned adapter and a base-vs-
+# fine-tuned delta. It trains on a tiny CORD slice for a handful of steps, so the
+# quality gain is modest — use configs/colab_t4.yaml (or raise the caps here) for
+# a run that actually moves the metrics meaningfully.
+# ===========================================================================
+name: visiondoc-ai-colab-t4-fast
+seed: 42
+device: auto
+
+model:
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  model_type: qwen2_5_vl
+  torch_dtype: float16
+  attn_implementation: sdpa
+  trust_remote_code: true
+  load_in_4bit: true
+  load_in_8bit: false
+  min_pixels: 200704
+  max_pixels: 602112
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  modules_to_save: null
+
+data:
+  dataset_name: cord
+  dataset_id: naver-clova-ix/cord-v2
+  dataset_subset: null
+  image_size: 768
+  max_seq_length: 768
+  train_split: train
+  val_split: validation
+  test_split: test
+  val_fraction: 0.1
+  test_fraction: 0.1
+  cache_dir: data/cache
+  raw_dir: data/raw
+  processed_dir: data/processed
+  num_workers: 2
+  augment: true
+  max_train_samples: 64       # tiny slice -> ~32 optimizer steps total
+  max_eval_samples: 16
+
+training:
+  output_dir: outputs/qwen2_5vl-cord-lora-colab-fast
+  num_train_epochs: 2.0
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4        # a touch higher since we take few steps
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  fp16: true
+  bf16: false
+  gradient_checkpointing: true
+  logging_steps: 2
+  eval_strategy: steps
+  eval_steps: 16
+  save_strategy: steps
+  save_steps: 16
+  save_total_limit: 1
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  resume_from_checkpoint: null
+  report_to: none
+  run_name: qwen2_5vl-cord-lora-colab-fast
+  dataloader_num_workers: 2
+  seed: 42
+
+inference:
+  adapter_path: null
+  max_new_tokens: 256
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.9
+  num_beams: 1
+  batch_size: 4
+  return_attention: false
+  confidence_method: seq_prob
