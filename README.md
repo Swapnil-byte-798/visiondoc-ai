@@ -18,6 +18,8 @@ Built end-to-end with PyTorch, Hugging Face Transformers, PEFT/LoRA and Qwen2.5-
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Swapnil-byte-798/visiondoc-ai/blob/main/notebooks/00_colab_quickstart.ipynb)
 
+📘 **New to VLMs, LoRA, or any of the tools?** Read the **[From-Scratch → Advanced Study & Interview Guide](docs/VisionDoc_AI_Study_Guide.pdf)** — a ~127-page PDF that explains the project *and every tool it uses* from zero, with a full interview-question bank.
+
 </div>
 
 ---
