@@ -225,7 +225,9 @@ class DocumentPredictor:
         if self._extractor is None:
             from inference.extract import FieldExtractor
 
-            self._extractor = FieldExtractor(self.model)
+            # Pass the predictor's OCR engine so extraction gets page-text
+            # grounding (prompt context + per-field hallucination flags).
+            self._extractor = FieldExtractor(self.model, ocr=self.ocr)
         return self._extractor.extract(image, fields=fields, doc_type=doc_type)
 
     # -- PDF ----------------------------------------------------------------
