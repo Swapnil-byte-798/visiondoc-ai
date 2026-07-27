@@ -62,9 +62,11 @@ class LoRAConfig:
     """PEFT/LoRA hyper-parameters.
 
     ``target_modules`` defaults to the attention + MLP projections of the LLM
-    decoder. ``None`` lets PEFT auto-detect linear layers. We deliberately do
-    NOT target the vision encoder by default — fine-tuning only the language
-    side is cheaper and usually sufficient for document QA.
+    decoder. Leaving it ``None`` in YAML falls back to the backbone adapter's
+    ``default_lora_target_modules`` (PEFT does not scan linear layers unless you
+    pass the special ``"all-linear"``). We deliberately do NOT target the vision
+    encoder by default — fine-tuning only the language side is cheaper and
+    usually sufficient for document QA.
     """
 
     r: int = 16

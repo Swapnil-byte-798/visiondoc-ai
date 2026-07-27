@@ -135,6 +135,17 @@ def exact_match(pred: str, refs: list[str]) -> float:
     return 1.0 if any(pred_norm == normalize_text(r) for r in refs) else 0.0
 
 
+def _anls_normalize(s: str) -> str:
+    """Lowercase + whitespace-collapse ONLY — the official DocVQA ANLS convention.
+
+    Deliberately does NOT strip articles/punctuation (unlike :func:`normalize_text`):
+    the canonical ANLS lowercases and trims whitespace only, so reusing the
+    SQuAD-style normalizer here would shrink edit distances and systematically
+    *inflate* the reported ANLS.
+    """
+    return " ".join(str(s or "").lower().split())
+
+
 def anls(pred: str, refs: list[str], threshold: float = 0.5) -> float:
     """Average Normalized Levenshtein Similarity — the standard DocVQA metric.
 
@@ -142,15 +153,16 @@ def anls(pred: str, refs: list[str], threshold: float = 0.5) -> float:
     tolerates minor OCR/spelling slips) and keep the best. The ANLS convention
     then *zeroes* any score below ``threshold`` (default 0.5): a near-miss is
     partially credited, but a wrong answer earns nothing rather than leaking
-    similarity points. Normalization is applied first so casing/punctuation do
-    not inflate the edit distance.
+    similarity points. We use the official lowercase+whitespace normalization
+    (see :func:`_anls_normalize`), not the SQuAD-style one, so the score matches
+    published DocVQA numbers.
     """
     if not refs:
         return 0.0
-    pred_norm = normalize_text(pred)
+    pred_norm = _anls_normalize(pred)
     best = 0.0
     for ref in refs:
-        similarity = 1.0 - _normalized_levenshtein(pred_norm, normalize_text(ref))
+        similarity = 1.0 - _normalized_levenshtein(pred_norm, _anls_normalize(ref))
         if similarity > best:
             best = similarity
     # Threshold gate: below it the answer is considered wrong (score 0).

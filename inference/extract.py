@@ -110,6 +110,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
 
 # Keys whose values are monetary and should be normalized to bare numbers.
 _MONEY_KEYS = {"subtotal", "tax", "tip", "total", "amount", "price", "due", "balance", "grand_total"}
+# Suffixes that mark a *compound* money key (e.g. "total_amount", "amount_due").
+# We match on suffix — NOT bare substring — so that e.g. "due_date" is never
+# mistaken for a money field and mangled by _normalize_money.
+_MONEY_SUFFIXES = ("_total", "_amount", "_price", "_subtotal", "_balance", "_due", "_tax", "_tip")
 
 # A compact, generic key set used when the caller gives neither ``fields`` nor a
 # recognized ``doc_type``. We still constrain the schema so output stays parseable.
@@ -386,7 +390,7 @@ class FieldExtractor:
         else:
             projected = dict(parsed)
         for k in list(projected):
-            if k in _MONEY_KEYS or any(m in k for m in _MONEY_KEYS):
+            if k in _MONEY_KEYS or any(k.endswith(s) for s in _MONEY_SUFFIXES):
                 projected[k] = _normalize_money(projected[k])
 
         # Grounding: flag which values actually appear in the page text.

@@ -47,8 +47,14 @@ class DonutModel(VisionDocModel):
 
     @property
     def default_lora_target_modules(self) -> list[str] | None:
-        # None => let PEFT auto-detect linear layers in the BART-style decoder.
-        return None
+        # Concrete linear-layer names of Donut's BART-style *decoder* (attention
+        # q/k/v/out + FFN fc1/fc2). We must name them explicitly: PEFT does NOT
+        # scan for linear layers when target_modules is None (that needs the
+        # special "all-linear"); with None it looks model_type up in a static
+        # mapping, and "vision-encoder-decoder" isn't in it -> it would raise.
+        # Naming the BART projections targets the language side; the Swin encoder
+        # uses different names and is left frozen, which is what we want.
+        return ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
 
     # -- Loading ------------------------------------------------------------
 

@@ -163,7 +163,7 @@ class VisionDocModel(ABC):
         magnitude versus full fine-tuning while keeping the frozen backbone's
         pretrained knowledge intact.
         """
-        from peft import LoraConfig, TaskType, get_peft_model
+        from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
         if self.model is None:
             raise RuntimeError("Call load() before apply_lora().")
@@ -173,12 +173,24 @@ class VisionDocModel(ABC):
 
         lcfg = self.config.lora
         targets = lcfg.target_modules or self.default_lora_target_modules
+        use_ckpt = self.config.training.gradient_checkpointing
 
-        # Gradient checkpointing needs inputs to require grad; enabling this on
-        # the input embeddings is the standard PEFT recipe for VLMs/LLMs.
-        if self.config.training.gradient_checkpointing and hasattr(
-            self.model, "enable_input_require_grads"
-        ):
+        # QLoRA stability: when the base was actually loaded in 4/8-bit,
+        # prepare_model_for_kbit_training upcasts LayerNorm/RMSNorm + the output
+        # head to fp32 (the numerical guard that keeps fp16 QLoRA loss from going
+        # NaN on a T4) and wires up gradient checkpointing + input grads. We gate
+        # on the *real* k-bit flags (not just the config), since quantization is
+        # skipped on non-CUDA devices even when load_in_4bit is set.
+        is_kbit = getattr(self.model, "is_loaded_in_4bit", False) or getattr(
+            self.model, "is_loaded_in_8bit", False
+        )
+        if is_kbit:
+            self.model = prepare_model_for_kbit_training(
+                self.model, use_gradient_checkpointing=use_ckpt
+            )
+        elif use_ckpt and hasattr(self.model, "enable_input_require_grads"):
+            # Non-quantized path: gradient checkpointing still needs inputs to
+            # require grad; enabling it on the input embeddings is the standard recipe.
             self.model.enable_input_require_grads()
 
         peft_config = LoraConfig(

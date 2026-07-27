@@ -96,10 +96,18 @@ class GPUMemoryCallback(TrainerCallback):
         # Fold the readings into the eval metrics so they persist in the trainer
         # state. We namespace with a ``gpu_`` prefix so they never collide with a
         # real quality metric or get mistaken for one by ``metric_for_best_model``.
+        gpu = {
+            "gpu_allocated_gb": round(stats["allocated_gb"], 3),
+            "gpu_reserved_gb": round(stats["reserved_gb"], 3),
+            "gpu_peak_gb": round(stats["max_allocated_gb"], 3),
+        }
         if metrics is not None:
-            metrics["gpu_allocated_gb"] = round(stats["allocated_gb"], 3)
-            metrics["gpu_reserved_gb"] = round(stats["reserved_gb"], 3)
-            metrics["gpu_peak_gb"] = round(stats["max_allocated_gb"], 3)
+            metrics.update(gpu)
+        # on_evaluate fires AFTER Trainer.log() has appended a COPY of the eval
+        # metrics to log_history, so mutating `metrics` alone would not persist.
+        # Update the just-appended entry so the readings land in trainer_state.json.
+        if state.log_history:
+            state.log_history[-1].update(gpu)
 
 
 class ThroughputCallback(TrainerCallback):
@@ -173,8 +181,12 @@ class ThroughputCallback(TrainerCallback):
                 samples,
                 delta_t,
             )
-            # Enrich the current log record so the figure is captured in the
-            # trainer's ``log_history`` alongside loss/lr for later plotting.
+            # Persist the figure alongside loss/lr for later plotting. on_log
+            # fires right AFTER the Trainer appended this record to log_history,
+            # so mutating the passed `logs` dict alone would not stick — update
+            # the just-appended entry (which is that same record) as well.
+            if state.log_history:
+                state.log_history[-1]["throughput_samples_per_second"] = round(samples_per_second, 2)
             if logs is not None:
                 logs["throughput_samples_per_second"] = round(samples_per_second, 2)
 
