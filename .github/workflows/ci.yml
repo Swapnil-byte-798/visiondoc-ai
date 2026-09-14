@@ -1,0 +1,90 @@
+# =============================================================================
+# VisionDoc AI — CI.
+#
+# This workflow is deliberately GPU-free and dependency-light. It cannot train a
+# 3B VLM, download CORD, or reproduce a benchmark — a GitHub-hosted runner has no
+# GPU and a 15-minute budget. What it CAN do, and what it is here for, is make it
+# impossible to merge:
+#
+#   1. a module that does not even parse (compileall over every package), or
+#   2. a README results table that disagrees with reports/results.json
+#      (`make readme-check` — see the gate at the bottom).
+#
+# The real numbers are produced on a Colab T4 by `make results`, which writes the
+# canonical reports/results.json; this job only verifies that the committed table
+# is a faithful rendering of that committed file. That split is the point: the
+# measurement needs a GPU, the honesty check does not.
+#
+# Only light deps are installed (no torch / transformers / peft): the test-suite
+# and conftest use pytest.importorskip so anything torch-backed SKIPS cleanly
+# rather than erroring, and compileall is syntax-only.
+# =============================================================================
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  check:
+    name: check (py3.11, cpu-only)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Only what the checked modules and the test-suite actually need to
+      # import. Installing requirements.txt here would pull ~2.5 GB of CUDA
+      # wheels to run a syntax check and a handful of pure-Python tests.
+      - name: Install light deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest PyYAML numpy Pillow
+
+      # Syntax-compile every package. Cheap, and it catches the class of breakage
+      # that a torch-less runner would otherwise never see, because most modules
+      # here cannot be imported without the ML stack.
+      - name: Compile all packages
+        run: make smoke
+
+      - name: Tests
+        run: pytest
+
+      # =======================================================================
+      # THE DRIFT GATE — the point of this workflow.
+      #
+      # scripts/update_readme.py regenerates the block between
+      # <!-- EVAL:BEGIN --> and <!-- EVAL:END --> from reports/results.json and
+      # exits 1 (with a unified diff) if the committed block differs by a single
+      # character. So a number cannot reach the README except by running the real
+      # comparison and committing its results file.
+      #
+      # It is green on a fresh clone with no reports/results.json: in that state
+      # the generated block says, in as many words, that no evaluation has been
+      # published yet. It goes red if someone pastes numbers into that state, or
+      # edits a published table by hand, or updates results.json without
+      # re-running `make readme`.
+      #
+      # This check never runs a model, so it stays honest: the block contains
+      # nothing machine-dependent (no latency, VRAM, timestamps or wall-clock),
+      # which is exactly why a CPU runner can verify a table measured on a T4.
+      # =======================================================================
+      - name: README table is not stale
+        run: make readme-check

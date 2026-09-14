@@ -183,12 +183,12 @@ To target **DocVQA** instead of CORD, copy `configs/colab_t4.yaml` and set
 
 Datasets are **downloaded automatically** from the Hugging Face Hub and normalized into `DocSample`s.
 
-| Name | Hub id | Task | Config |
+| Name | Hub id | Task | Status |
 |---|---|---|---|
-| **DocVQA** *(default)* | `lmms-lab/DocVQA` | Document VQA | `configs/default.yaml` |
-| CORD | `naver-clova-ix/cord-v2` | Receipt field extraction | `configs/cord_qwen.yaml` |
-| FUNSD | forms | Form understanding | `data.dataset_name: funsd` |
-| SROIE | receipts | Key-information extraction | `data.dataset_name: sroie` |
+| **CORD** *(benchmarked)* | `naver-clova-ix/cord-v2` | Receipt field extraction | ✅ **The published run** — `configs/benchmark_cord.yaml` (train 800 / val 100 / test 100) |
+| DocVQA | `lmms-lab/DocVQA` | Document VQA | ⚠️ **Eval-only** — this Hub repo ships `validation` + `test` only (**no `train` split**), so it cannot be fine-tuned as configured. Not yet benchmarked. |
+| FUNSD | *(not wired)* | Form understanding | ❌ Loader exists, but no `dataset_id` is configured anywhere — not runnable as-is |
+| SROIE | *(not wired)* | Key-information extraction | ❌ Loader exists, but no `dataset_id` is configured anywhere — not runnable as-is |
 
 ```bash
 make download                       # download + split + cache the configured dataset
@@ -284,16 +284,38 @@ make compare        # python -m research.compare --config configs/default.yaml
 Evaluates the **frozen base model** and the **LoRA fine-tuned** model on the same test split and emits
 `reports/comparison.csv`, `reports/comparison.md`, and a grouped bar chart.
 
-> **Results** *(populate after your run — placeholders shown)*
+### Results
 
-| Metric | Base (zero-shot) | LoRA fine-tuned | Δ |
-|---|---|---|---|
-| ANLS ↑ | `0.xx` | `0.xx` | `+0.xx` |
-| Exact Match ↑ | `0.xx` | `0.xx` | `+0.xx` |
-| Token F1 ↑ | `0.xx` | `0.xx` | `+0.xx` |
-| Avg latency (ms) ↓ | `xx` | `xx` | — |
-| Peak VRAM (GB) | `xx` | `xx` | — |
-| Trainable params | `2.6 B` | **`~9 M` (0.35%)** | — |
+The table below is **generated from `reports/results.json`** by `make readme` — it is never
+hand-edited. CI runs `make readme-check` and **fails the build** if the committed table drifts from
+the results file by a single character, so a number cannot reach this README except through a real run.
+
+Machine-dependent figures (latency, VRAM, wall-clock training time) are deliberately **kept out** of
+the checked block — they differ per runner and would either break CI or force the gate to be made
+toothless. They live in `reports/results.json`.
+
+<!-- EVAL:BEGIN -->
+
+<!-- Written by scripts/update_readme.py from reports/results.json.
+     Do not edit by hand: CI runs `--check` and fails the build when this
+     block is stale or hand-edited. Machine-dependent figures (latency,
+     VRAM, training wall-clock) are deliberately absent — see results.json. -->
+
+**No evaluation run has been published yet.** `reports/results.json` does not exist in this checkout, so there are no numbers to show — and this project does not print placeholder ones.
+
+To produce the artifact this table is generated from:
+
+```bash
+make results      # python -m research.compare --config configs/benchmark_cord.yaml --adapter outputs/.../adapter --split validation+test --max-samples 200
+make readme       # regenerate this block from reports/results.json
+```
+
+Commit the resulting `reports/results.json` alongside the regenerated block. CI runs `make readme-check` and fails if the two ever disagree, so the table cannot drift from the run — and cannot be written by hand.
+
+<!-- EVAL:END -->
+
+Reproduce it yourself: [`notebooks/01_reproduce_results.ipynb`](notebooks/01_reproduce_results.ipynb)
+(free Colab T4, resumable across disconnects) → commit `reports/results.json` → `make readme`.
 
 ---
 

@@ -1,0 +1,138 @@
+# ===========================================================================
+# VisionDoc AI — CANONICAL PUBLISHED BENCHMARK CONFIG (CORD-v2, Qwen2.5-VL-3B)
+# ---------------------------------------------------------------------------
+# This is the exact config behind the numbers in the README. It is driven by
+# notebooks/01_reproduce_results.ipynb on a FREE Google Colab T4 and produces
+# reports/results.json via `python -m research.compare`.
+#
+# Every choice below is a constraint, not a preference:
+#
+#   * Qwen/Qwen2.5-VL-3B-Instruct + load_in_4bit (QLoRA) — the 7B does not fit
+#     a 16 GB T4 with activations; the 3B does, at ~6-7 GB with 4-bit weights.
+#   * fp16: true / bf16: false — Turing (T4, SM 7.5) has NO bfloat16 units.
+#     Passing bf16 on a T4 is a hard crash, not a slowdown.
+#   * CORD-v2 is the only dataset in this repo with a real train split that
+#     fits the free tier (800 train / 100 validation / 100 test receipts).
+#   * max_train_samples: null — use ALL 800. This is only safe because the
+#     sample caps are now resolved *before* the HF split is decoded into PIL
+#     images (preprocessing/datasets.py); previously a capped run still
+#     decoded the whole split and OOM'd Colab's ~12.7 GB of system RAM.
+#
+# HEADLINE METRIC NOTE: CORD targets are serialized JSON, so exact-match /
+# ANLS / token-F1 are structurally pinned near zero on a whole JSON blob. The
+# published headline is field-level precision/recall/F1
+# (evaluation.metrics.structured_field_metrics); EM/ANLS/token-F1 are still
+# reported, labelled secondary. research/compare.py enforces that labelling.
+#
+# EVAL SET: the published comparison evaluates validation+test pooled into ONE
+# fixed 200-sample list (the same list, seed, and decoding params for both
+# arms), passed on the CLI:
+#     python -m research.compare --config configs/benchmark_cord.yaml \
+#         --adapter outputs/qwen2_5vl-cord-lora-benchmark/adapter \
+#         --split validation+test --max-samples 200 \
+#         --results-json reports/results.json
+# `data.max_eval_samples` below (100) governs the *in-training* eval loop only,
+# which runs every 25 steps and must stay cheap; it is not the published n.
+# ===========================================================================
+name: visiondoc-ai-cord-benchmark
+seed: 42
+device: auto
+output_root: outputs
+report_dir: reports
+
+model:
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  model_type: qwen2_5_vl
+  processor_id: null
+  torch_dtype: float16        # T4 has no bf16; fp16 is the only correct choice
+  attn_implementation: sdpa   # flash-attn needs Ampere+; T4 is Turing
+  trust_remote_code: true
+  load_in_4bit: true          # QLoRA: 3B backbone fits a 16 GB T4
+  load_in_8bit: false
+  min_pixels: 200704          # 256 * 28 * 28
+  max_pixels: 602112          # 768 * 28 * 28 — receipts stay legible, VRAM low
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  # Left null on purpose: the backbone adapter's own
+  # `default_lora_target_modules` is the single source of truth for which
+  # modules are language-side only. Hard-coding bare suffixes here (e.g.
+  # gate_proj/up_proj/down_proj) also matches the Qwen2.5-VL *vision tower* MLP
+  # submodules, which would silently falsify the "ViT frozen" claim.
+  target_modules: null
+  modules_to_save: null
+
+data:
+  dataset_name: cord
+  dataset_id: naver-clova-ix/cord-v2
+  dataset_subset: null
+  image_size: 768
+  max_seq_length: 768
+  train_split: train
+  val_split: validation
+  test_split: test
+  val_fraction: 0.1
+  test_fraction: 0.1
+  cache_dir: data/cache
+  raw_dir: data/raw
+  processed_dir: data/processed
+  num_workers: 2
+  augment: true
+  max_train_samples: null     # ALL 800 CORD training receipts
+  max_eval_samples: 100       # in-training eval loop only (see header note)
+
+training:
+  output_dir: outputs/qwen2_5vl-cord-lora-benchmark
+  num_train_epochs: 2.0
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8   # effective batch 8 on one T4
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  fp16: true                  # <-- T4
+  bf16: false
+  gradient_checkpointing: true
+  logging_steps: 5
+  # Checkpoint cadence is a disconnect-survival policy, not a tuning knob:
+  # Colab free sessions die without warning, so we checkpoint every 25 optimizer
+  # steps (~1/8 of an epoch at effective batch 8 over 800 samples) and keep 2.
+  # save_steps MUST equal eval_steps for load_best_model_at_end to work, and
+  # save_total_limit 2 (not 1) guarantees the best checkpoint is never the one
+  # rotation deletes.
+  eval_strategy: steps
+  eval_steps: 25
+  save_strategy: steps
+  save_steps: 25
+  save_total_limit: 2
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss   # no compute_metrics in the train loop
+  greater_is_better: false           # loss: lower is better
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  resume_from_checkpoint: null       # the notebook passes --resume <ckpt>
+  report_to: none                    # no network calls mid-run
+  run_name: qwen2_5vl-cord-lora-benchmark
+  dataloader_num_workers: 2
+  seed: 42
+
+inference:
+  adapter_path: null          # set on the CLI: --adapter outputs/.../adapter
+  # 512, not 256: a CORD gold target is a full serialized JSON receipt and
+  # routinely exceeds 256 tokens. Truncating the *gold-length* generation caps
+  # exact-match below 1.0 by construction and depresses field recall — a
+  # measurement artifact masquerading as model error.
+  max_new_tokens: 512
+  do_sample: false            # greedy => deterministic, identical for both arms
+  temperature: 0.7
+  top_p: 0.9
+  num_beams: 1
+  batch_size: 4
+  return_attention: false
+  confidence_method: seq_prob

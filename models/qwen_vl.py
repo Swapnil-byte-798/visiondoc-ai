@@ -7,7 +7,10 @@ Implements the :class:`VisionDocModel` tensorization hooks for
   (which applies Qwen's smart-resize within the configured pixel budget),
 * training examples mask the prompt tokens (loss only on the answer),
 * generation uses **left** padding (required so appended tokens line up across a
-  batch) while training uses **right** padding.
+  batch) while training uses **right** padding,
+* LoRA targets are resolved to fully-qualified **language-decoder** module names
+  so the vision tower really is frozen (see
+  :data:`LANGUAGE_ONLY_TARGET_REGEX` and :meth:`Qwen25VLModel.apply_lora`).
 
 Qwen2.5-VL is a *causal* LM, so ``generate`` returns ``prompt + completion`` and
 :meth:`decode` slices the prompt off.
@@ -15,6 +18,8 @@ Qwen2.5-VL is a *causal* LM, so ``generate`` returns ``prompt + completion`` and
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from typing import Any, Sequence
 
 import torch
@@ -33,15 +38,170 @@ _SYSTEM_PROMPT = (
     "document image concisely, using only information visible in the document."
 )
 
+# --- LoRA targeting: making "the ViT stays frozen" actually true -------------
+#
+# Qwen2.5-VL's module tree (verified against the HF implementation of
+# ``Qwen2_5_VLForConditionalGeneration``):
+#
+#   language decoder : model.layers.{i}.self_attn.{q,k,v,o}_proj
+#                      model.layers.{i}.mlp.{gate,up,down}_proj
+#                      (transformers >= 4.52 nests this one level deeper as
+#                       model.language_model.layers.{i}. ...)
+#   vision tower     : visual.blocks.{i}.attn.{qkv,proj}
+#                      visual.blocks.{i}.mlp.{gate,up,down}_proj   <-- collision
+#                      visual.merger.mlp.{0,2}
+#                      (again, model.visual.blocks... on newer transformers)
+#
+# PEFT matches a *bare* target name by suffix (``key == t or key.endswith("."+t)``).
+# So the historical target list ``[..., "gate_proj", "up_proj", "down_proj"]`` also
+# matched ``visual.blocks.*.mlp.*_proj`` — i.e. the ViT MLPs were being adapted
+# and the "vision encoder is frozen" claim in the docs was FALSE.
+#
+# A regex string is passed to PEFT instead, which PEFT matches with
+# ``re.fullmatch`` against the fully-qualified module name. Two things make it
+# vision-safe: it requires a ``layers.<int>.`` segment (the vision tower uses
+# ``blocks.<int>.``) and it additionally refuses any name containing a
+# ``visual``/``vision_tower``/``vision_model`` path segment.
+LANGUAGE_ONLY_TARGET_REGEX = (
+    r"^(?!.*(?:^|\.)(?:visual|vision_tower|vision_model)\.)"
+    r"(?:.*\.)?layers\.\d+\."
+    r"(?:self_attn\.[qkvo]_proj|mlp\.(?:gate|up|down)_proj)$"
+)
+
+#: Path segments that mark a module as belonging to the (frozen) vision tower.
+_VISION_PATH_SEGMENTS = frozenset({"visual", "vision_tower", "vision_model"})
+
+
+def _is_vision_module_name(name: str) -> bool:
+    """True when a fully-qualified module name sits inside the vision tower."""
+    return any(seg in _VISION_PATH_SEGMENTS for seg in name.split("."))
+
+
+def _is_adaptable_linear(module: Any) -> bool:
+    """True for LoRA-injectable linear layers (``nn.Linear``, bnb ``Linear4bit``, ...).
+
+    Duck-typed on ``in_features``/``out_features`` rather than ``isinstance`` so
+    quantized bitsandbytes layers count without importing bitsandbytes here.
+    """
+    return hasattr(module, "in_features") and hasattr(module, "out_features")
+
+
+def language_only_linear_targets(model: Any) -> list[str]:
+    """Enumerate the *actual* language-decoder linear layers of a loaded model.
+
+    Returns fully-qualified module names, which PEFT matches exactly. Resolving
+    against the real module tree (rather than trusting a hand-written list) is
+    what makes the "vision tower frozen" claim checkable: anything under
+    ``visual.*`` is filtered out by construction, and the returned list is what
+    gets recorded in the run config.
+    """
+    pattern = re.compile(LANGUAGE_ONLY_TARGET_REGEX)
+    names: list[str] = []
+    for name, module in model.named_modules():
+        if not name or _is_vision_module_name(name) or not _is_adaptable_linear(module):
+            continue
+        if pattern.fullmatch(name):
+            names.append(name)
+    return names
+
+
+def vision_modules_matched_by(model: Any, targets: Sequence[str]) -> list[str]:
+    """Return vision-tower modules that ``targets`` would (wrongly) adapt.
+
+    Replicates PEFT's bare-name matching rule (exact name or dotted suffix) so
+    the check reflects what PEFT would really do, not what we hope it does. An
+    empty result means the target list is already vision-safe on this model.
+    """
+    hits: list[str] = []
+    for name, module in model.named_modules():
+        if not name or not _is_vision_module_name(name) or not _is_adaptable_linear(module):
+            continue
+        for t in targets:
+            if name == t or name.endswith("." + t):
+                hits.append(name)
+                break
+    return hits
+
 
 @register_model("qwen2_5_vl")
 class Qwen25VLModel(VisionDocModel):
     """Adapter for Qwen2.5-VL instruction-tuned vision-language models."""
 
     @property
-    def default_lora_target_modules(self) -> list[str] | None:
-        # Language-decoder attention + MLP projections. We leave the ViT frozen.
-        return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    def default_lora_target_modules(self) -> list[str] | str | None:
+        """Language-decoder attention + MLP projections **only** — the ViT stays frozen.
+
+        Two forms are returned, both language-only (see the module-level notes on
+        Qwen2.5-VL's naming):
+
+        * once the backbone is loaded, the *resolved* list of fully-qualified
+          module names (``model.layers.7.mlp.gate_proj``, ...). Enumerating the
+          real module tree means the "no vision modules" property is verified,
+          not asserted, and the exact adapted layers end up in the run config.
+        * before loading (or if enumeration finds nothing, e.g. an unexpected
+          transformers layout), :data:`LANGUAGE_ONLY_TARGET_REGEX`. PEFT accepts
+          a string target as a regex and matches it with ``re.fullmatch``.
+
+        The return type widens the base-class annotation (``list[str] | None``)
+        by allowing ``str``; PEFT accepts both, and the regex fallback is the
+        only way to stay vision-safe without a loaded model to inspect.
+        """
+        if self.model is not None:
+            resolved = language_only_linear_targets(self.model)
+            if resolved:
+                return resolved
+            logger.warning(
+                "No language-decoder linear layers matched %s on this Qwen2.5-VL "
+                "build; falling back to the regex target (PEFT will re-match it).",
+                LANGUAGE_ONLY_TARGET_REGEX,
+            )
+        return LANGUAGE_ONLY_TARGET_REGEX
+
+    # -- LoRA ---------------------------------------------------------------
+
+    def apply_lora(self) -> "Qwen25VLModel":
+        """Apply LoRA, first rejecting target names that would leak into the ViT.
+
+        ``config.lora.target_modules`` historically shipped as bare leaf names
+        (``gate_proj``/``up_proj``/``down_proj``), and PEFT resolves bare names by
+        dotted-suffix match — which silently also hits ``visual.blocks.*.mlp.*``.
+        Every experiment run with that config therefore fine-tuned the vision
+        tower while the report claimed it was frozen.
+
+        Rather than trusting the config, we ask the *loaded model* whether the
+        configured targets match any vision module. Only if they do (i.e. the
+        claim would be false on this concrete build) do we substitute the
+        resolved language-only targets, and we say so at WARNING level. A config
+        that deliberately and unambiguously targets vision modules — qualified
+        names under ``visual.*`` — is left untouched, because then the user meant
+        it and no false claim is being made on their behalf.
+        """
+        if self.model is None:
+            raise RuntimeError("Call load() before apply_lora().")
+
+        configured = self.config.lora.target_modules
+        if isinstance(configured, (list, tuple)) and configured:
+            leaked = vision_modules_matched_by(self.model, list(configured))
+            if leaked:
+                safe = self.default_lora_target_modules
+                logger.warning(
+                    "config.lora.target_modules=%s would also adapt %d vision-tower "
+                    "modules (e.g. %s), contradicting the 'ViT frozen / language-side "
+                    "only' claim. Overriding with %s language-only targets. Set "
+                    "target_modules: null in the YAML config to silence this.",
+                    list(configured),
+                    len(leaked),
+                    ", ".join(leaked[:3]),
+                    len(safe) if isinstance(safe, list) else "regex-matched",
+                )
+                # ProjectConfig/LoRAConfig are frozen dataclasses; rebuild rather
+                # than mutate so ``model.config`` reports what actually ran.
+                self.config = replace(
+                    self.config, lora=replace(self.config.lora, target_modules=safe)
+                )
+
+        super().apply_lora()
+        return self
 
     # -- Loading ------------------------------------------------------------
 
@@ -207,4 +367,9 @@ class Qwen25VLModel(VisionDocModel):
         )
 
 
-__all__ = ["Qwen25VLModel"]
+__all__ = [
+    "Qwen25VLModel",
+    "LANGUAGE_ONLY_TARGET_REGEX",
+    "language_only_linear_targets",
+    "vision_modules_matched_by",
+]

@@ -8,7 +8,7 @@ This module is the single translation layer between the project's typed
 ``train.py``) means the training *policy* lives in config and the *wiring* lives
 in one auditable place.
 
-Three deliberate, non-obvious choices are encoded below:
+Four deliberate, non-obvious choices are encoded below:
 
 1. ``remove_unused_columns=False`` and ``label_names=["labels"]``. Our datasets
    yield raw ``DocSample.to_record()`` dicts (image, question, answer, ...) that
@@ -30,6 +30,12 @@ Three deliberate, non-obvious choices are encoded below:
    transparently switch ``metric_for_best_model`` to ``eval_loss`` — otherwise
    ``load_best_model_at_end`` would look for a metric that never gets produced
    and crash at the first evaluation.
+
+4. Hardware-checked precision. ``bf16=True`` from a config is validated against
+   the *actual* GPU before it reaches ``TrainingArguments`` (see
+   :func:`_resolve_precision_flags`). The published runs execute on a Colab free
+   T4, which has no bfloat16 support, so an unchecked flag would abort the run at
+   construction time; we downgrade to fp16 (or fp32 off CUDA) and log it.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from transformers import Trainer, TrainingArguments
 
 from configs.config import ProjectConfig
 from models.base import VisionDocModel
+from utils.device import resolve_device, resolve_dtype
 from utils.logging_utils import get_logger
 
 from training.callbacks import (
@@ -66,14 +73,11 @@ def build_training_arguments(config: ProjectConfig) -> TrainingArguments:
     """
     tcfg = config.training
 
-    # bf16 and fp16 are mutually exclusive; if a config sets both (e.g. copied
-    # from two examples), prefer bf16 — it has the wider dynamic range and is the
-    # right default on Ampere+ where these LoRA runs are expected to live.
-    bf16 = bool(tcfg.bf16)
-    fp16 = bool(tcfg.fp16)
-    if bf16 and fp16:
-        logger.warning("Both bf16 and fp16 requested; using bf16 and disabling fp16.")
-        fp16 = False
+    # Precision is validated against the hardware the run will actually use
+    # (``config.device`` may pin cpu/mps even on a CUDA box), never trusted blindly.
+    fp16, bf16 = _resolve_precision_flags(
+        bool(tcfg.fp16), bool(tcfg.bf16), device_preference=config.device
+    )
 
     kwargs: dict[str, Any] = dict(
         output_dir=tcfg.output_dir,
@@ -119,6 +123,77 @@ def build_training_arguments(config: ProjectConfig) -> TrainingArguments:
         kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
 
     return _construct_training_arguments(kwargs)
+
+
+def _resolve_precision_flags(
+    fp16: bool, bf16: bool, device_preference: str = "auto"
+) -> tuple[bool, bool]:
+    """Reconcile the configured ``fp16``/``bf16`` flags with the actual hardware.
+
+    Returns the ``(fp16, bf16)`` pair that is safe to hand to
+    ``TrainingArguments`` on *this* machine. ``device_preference`` is
+    ``ProjectConfig.device`` ("auto" | "cuda" | "mps" | "cpu"), so a run pinned to
+    CPU on a CUDA box is judged against the device it will really use.
+
+    Why this guard exists
+    ---------------------
+    ``TrainingConfig`` defaults are written for the Ampere+ boxes the project was
+    designed on, but the published CORD baseline-vs-LoRA runs execute on a Colab
+    free **T4** — a Turing card with *no* bfloat16 support. Forwarding
+    ``bf16=True`` there makes ``TrainingArguments`` raise
+    ("Your setup doesn't support bf16/gpu") and kills the run at construction
+    time, after the dataset has already been downloaded and decoded. Rather than
+    require every config to know which GPU it will land on, we downgrade here and
+    say so loudly, so the run completes and the log records the precision that was
+    actually used (an honest record matters: precision is part of the experimental
+    setup we publish).
+
+    Downgrade ladder, mirroring :func:`utils.device.resolve_dtype` so the training
+    loop and the model-loading path can never disagree about precision:
+
+    * CUDA with bf16 support -> bf16 kept as configured.
+    * CUDA without bf16 support (T4/V100/other pre-Ampere) -> fp16.
+    * No CUDA (CPU / Apple MPS) -> full fp32; ``fp16`` is cleared too, because HF
+      mixed precision is a CUDA-AMP path and also raises without an accelerator.
+
+    ``fp16`` and ``bf16`` are additionally guaranteed to never both be ``True``:
+    a config that sets both (typically copied from two examples) prefers bf16 for
+    its wider dynamic range — subject to the same capability check.
+    """
+    if bf16 and fp16:
+        logger.warning("Both bf16 and fp16 requested; using bf16 and disabling fp16.")
+        fp16 = False
+
+    if not (bf16 or fp16):
+        return False, False
+
+    device = resolve_device(device_preference)
+
+    if device.type != "cuda":
+        # No CUDA accelerator: neither HF mixed-precision mode is usable.
+        logger.warning(
+            "Mixed precision requested (fp16=%s, bf16=%s) but no CUDA device is "
+            "available (resolved device=%s); training in full fp32 instead.",
+            fp16,
+            bf16,
+            device.type,
+        )
+        return False, False
+
+    if bf16:
+        # Ask the single source of truth what bfloat16 degrades to here:
+        # ``resolve_dtype`` returns bfloat16 only on a bf16-capable CUDA GPU and
+        # float16 on a CUDA GPU without bf16 (Turing/Volta).
+        supported = str(resolve_dtype("bfloat16", device)).replace("torch.", "")
+        if supported != "bfloat16":
+            logger.warning(
+                "bf16=True was requested but this GPU (%s) does not support "
+                "bfloat16; downgrading to fp16 for the whole run.",
+                device.type,
+            )
+            return True, False
+
+    return fp16, bf16
 
 
 def _normalize_report_to(report_to: str) -> str | list[str]:
