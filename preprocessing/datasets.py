@@ -260,7 +260,7 @@ def _missing_split_error(config: "ProjectConfig", hf_split: str, available: Any)
     )
 
 
-def _undecoded(ds: "hfds.Dataset") -> "hfds.Dataset":
+def keep_images_encoded(ds: "hfds.Dataset") -> "hfds.Dataset":
     """Return ``ds`` with its image column kept ENCODED (``Image(decode=False)``).
 
     Iterating a split whose ``image`` column is a normal ``datasets.Image``
@@ -337,7 +337,7 @@ def _hf_load(
         else:
             raise
     # Truncate first (cheap index rewrite), then keep the retained rows encoded.
-    return _undecoded(_truncate(ds, limit))
+    return keep_images_encoded(_truncate(ds, limit))
 
 
 def _truncate(ds: "hfds.Dataset", limit: int | None) -> "hfds.Dataset":
@@ -871,4 +871,10 @@ def to_hf_dataset(samples: list[DocSample]) -> "hfds.Dataset":
     return ds
 
 
-__all__ = ["load_samples", "build_splits", "to_hf_dataset"]
+__all__ = ["load_samples", "build_splits", "to_hf_dataset", "keep_images_encoded"]
+
+
+# Public alias: training/eval iterate DatasetDicts that may have been built with a
+# decode=True Image feature (to_hf_dataset casts for storage). Wrapping a split in
+# this before iterating is what keeps a whole corpus from decoding into RAM.
+_undecoded = keep_images_encoded

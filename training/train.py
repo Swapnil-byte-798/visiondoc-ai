@@ -91,7 +91,12 @@ def _obtain_splits(config: "ProjectConfig") -> dict[str, list["DocSample"]]:
     ``from_record`` so the rest of the pipeline is agnostic to how the data was
     obtained.
     """
-    from preprocessing import build_and_cache, build_splits, load_cached
+    from preprocessing import (
+        build_and_cache,
+        build_splits,
+        keep_images_encoded,
+        load_cached,
+    )
     from preprocessing.schema import DocSample
 
     cached = load_cached(config)
@@ -100,13 +105,21 @@ def _obtain_splits(config: "ProjectConfig") -> dict[str, list["DocSample"]]:
             "Using cached splits: %s",
             {name: len(cached[name]) for name in cached},
         )
-        return {name: [DocSample.from_record(row) for row in cached[name]] for name in cached}
+        # keep_images_encoded BEFORE iterating: a DatasetDict read back from disk
+        # (or freshly built by to_hf_dataset) carries a decode=True Image feature,
+        # so iterating it decodes every page into RAM -- ~4.7 GB for CORD train,
+        # which is what exhausted the 12.7 GB Colab VM. Encoded rows are ~300 KB
+        # and DocumentDataset decodes exactly one per __getitem__.
+        return {
+            name: [DocSample.from_record(row) for row in keep_images_encoded(cached[name])]
+            for name in cached
+        }
 
     logger.info("No dataset cache found; building splits from source (and caching for reuse).")
     try:
         dataset_dict = build_and_cache(config)
         return {
-            name: [DocSample.from_record(row) for row in dataset_dict[name]]
+            name: [DocSample.from_record(row) for row in keep_images_encoded(dataset_dict[name])]
             for name in dataset_dict
         }
     except Exception:

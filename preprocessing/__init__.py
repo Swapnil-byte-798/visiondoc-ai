@@ -31,6 +31,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "load_samples": "preprocessing.datasets",
     "build_splits": "preprocessing.datasets",
     "to_hf_dataset": "preprocessing.datasets",
+    "keep_images_encoded": "preprocessing.datasets",
     "DocumentAugmenter": "preprocessing.transforms",
     "build_augmenter": "preprocessing.transforms",
     "DocumentDataset": "preprocessing.dataset",
