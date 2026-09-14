@@ -314,8 +314,11 @@ Commit the resulting `reports/results.json` alongside the regenerated block. CI 
 
 <!-- EVAL:END -->
 
-Reproduce it yourself: [`notebooks/01_reproduce_results.ipynb`](notebooks/01_reproduce_results.ipynb)
-(free Colab T4, resumable across disconnects) → commit `reports/results.json` → `make readme`.
+**Reproduce it yourself** on a free Colab T4 (resumable across disconnects):
+
+[![Open the benchmark in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Swapnil-byte-798/visiondoc-ai/blob/main/notebooks/01_reproduce_results.ipynb)
+
+→ run [`notebooks/01_reproduce_results.ipynb`](notebooks/01_reproduce_results.ipynb) → commit `reports/results.json` → `make readme`.
 
 ---
 
