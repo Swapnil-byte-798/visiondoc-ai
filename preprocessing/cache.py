@@ -101,7 +101,19 @@ def load_cached(config: "ProjectConfig") -> "hfds.DatasetDict | None":
         from datasets import load_from_disk
 
         logger.info("Loading cached splits <- %s", path)
-        return load_from_disk(str(path))
+        cached = load_from_disk(str(path))
+        # ``save_to_disk`` persists a decode=True Image feature, so iterating a
+        # cached split would decode every page straight back into RAM (~5 GB for
+        # CORD train) and undo preprocessing.datasets._undecoded. Re-read encoded.
+        try:
+            from datasets import Image as HFImage
+
+            for split in list(cached.keys()):
+                if "image" in cached[split].column_names:
+                    cached[split] = cached[split].cast_column("image", HFImage(decode=False))
+        except Exception:  # pragma: no cover - older datasets
+            logger.debug("Could not disable image decoding on cached splits.")
+        return cached
     except Exception as exc:  # pragma: no cover - corrupt cache -> rebuild
         logger.warning("Failed to load cache at %s (%s); will rebuild.", path, exc)
         return None

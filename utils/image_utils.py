@@ -34,6 +34,16 @@ def load_image(source: str | bytes | Path | Image.Image | np.ndarray) -> Image.I
     """
     if isinstance(source, Image.Image):
         return ensure_rgb(source)
+    # ``datasets.Image(decode=False)`` yields {"bytes": ..., "path": ...}. We keep
+    # dataset images ENCODED in memory (a decoded CORD scan is 3-28 MB; a whole
+    # split of them OOMs a Colab VM) and decode exactly one here, at collate time.
+    if isinstance(source, dict):
+        raw, path = source.get("bytes"), source.get("path")
+        if raw:
+            return ensure_rgb(Image.open(io.BytesIO(raw)))
+        if path:
+            return ensure_rgb(Image.open(path))
+        raise ValueError("image mapping has neither 'bytes' nor 'path'")
     if isinstance(source, np.ndarray):
         return ensure_rgb(Image.fromarray(source.astype(np.uint8)))
     if isinstance(source, (str, Path)):

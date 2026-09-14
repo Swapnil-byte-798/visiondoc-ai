@@ -260,6 +260,30 @@ def _missing_split_error(config: "ProjectConfig", hf_split: str, available: Any)
     )
 
 
+def _undecoded(ds: "hfds.Dataset") -> "hfds.Dataset":
+    """Return ``ds`` with its image column kept ENCODED (``Image(decode=False)``).
+
+    Iterating a split whose ``image`` column is a normal ``datasets.Image``
+    feature decodes *every* page into a PIL object. A CORD scan is 3-28 MB
+    decoded, so the 800-row train split alone is roughly 5 GB held in a Python
+    list -- which is what exhausted system RAM and killed the first published
+    run before training began. Capping rows (:func:`_truncate`) bounds that only
+    when a cap is set; keeping the bytes encoded bounds it *always*.
+
+    With ``decode=False`` each row carries the original encoded bytes (~300 KB)
+    and :func:`utils.image_utils.load_image` decodes exactly one image at collate
+    time, so peak RAM is one batch rather than one split.
+    """
+    try:
+        from datasets import Image as HFImage
+
+        if "image" in getattr(ds, "column_names", []) or []:
+            return ds.cast_column("image", HFImage(decode=False))
+    except Exception:  # pragma: no cover - older datasets / non-image corpora
+        logger.debug("Could not disable image decoding; falling back to eager decode.")
+    return ds
+
+
 def _hf_load(
     config: "ProjectConfig", hf_split: str, limit: int | None = None
 ) -> "hfds.Dataset":
@@ -312,7 +336,8 @@ def _hf_load(
             raise _missing_split_error(config, hf_split, available) from exc
         else:
             raise
-    return _truncate(ds, limit)
+    # Truncate first (cheap index rewrite), then keep the retained rows encoded.
+    return _undecoded(_truncate(ds, limit))
 
 
 def _truncate(ds: "hfds.Dataset", limit: int | None) -> "hfds.Dataset":
