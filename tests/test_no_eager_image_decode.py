@@ -85,17 +85,31 @@ def _load_train_module():
     return module
 
 
-def _run_obtain_splits(cached, built):
+CALLS: dict[str, int] = {}
+
+
+def _run_obtain_splits(cached, built_lists):
     """Drive the real ``_obtain_splits`` with a stubbed preprocessing facade."""
     real_datasets_mod = importlib.import_module("preprocessing.datasets")
     keep = real_datasets_mod.keep_images_encoded  # the REAL guard under test
     schema_mod = sys.modules["preprocessing.schema"]
+    CALLS.clear()
+
+    def _build_and_cache(_cfg):
+        # Must never be reached from training: it round-trips every image through
+        # Arrow (twice) and then save_to_disk, which is what exhausted host RAM.
+        CALLS["build_and_cache"] = CALLS.get("build_and_cache", 0) + 1
+        raise AssertionError("training must not build the Arrow cache")
+
+    def _build_splits(_cfg):
+        CALLS["build_splits"] = CALLS.get("build_splits", 0) + 1
+        return built_lists
 
     facade = types.ModuleType("preprocessing")
     facade.keep_images_encoded = keep
     facade.load_cached = lambda _cfg: cached
-    facade.build_and_cache = lambda _cfg: built
-    facade.build_splits = lambda _cfg: {}
+    facade.build_and_cache = _build_and_cache
+    facade.build_splits = _build_splits
 
     saved = sys.modules.get("preprocessing")
     sys.modules["preprocessing"] = facade
@@ -121,22 +135,49 @@ def _fake_datasets(monkeypatch):
     yield
 
 
-@pytest.mark.parametrize("branch", ["cache_hit", "fresh_build"])
-def test_obtain_splits_never_decodes_a_whole_split(branch):
-    """Neither resolution branch may decode images while materializing splits."""
-    if branch == "cache_hit":
-        splits = _run_obtain_splits(cached=_splits(), built=None)
-    else:
-        splits = _run_obtain_splits(cached=None, built=_splits())
+def _encoded_lists():
+    """What ``build_splits`` returns: DocSamples already holding encoded bytes."""
+    from preprocessing.schema import DocSample
+
+    def make(n):
+        return [
+            DocSample(image={"bytes": b"\x89PNG", "path": None}, question="q",
+                      answer="a", sample_id=str(i), task="extraction")
+            for i in range(n)
+        ]
+
+    return {"train": make(800), "validation": make(100), "test": make(100)}
+
+
+def test_cache_hit_branch_never_decodes_a_whole_split():
+    """A cached DatasetDict carries a decode=True Image feature; iterating it must not decode."""
+    splits = _run_obtain_splits(cached=_splits(), built_lists=None)
 
     assert DECODES["n"] == 0, (
-        f"{branch}: {DECODES['n']} images were decoded into RAM while building splits. "
+        f"{DECODES['n']} images were decoded into RAM while re-hydrating the cache. "
         "Wrap the split in preprocessing.keep_images_encoded() before iterating it."
     )
     assert {k: len(v) for k, v in splits.items()} == {"train": 800, "validation": 100, "test": 100}
-    # Images must still be the undecoded {"bytes", "path"} mapping that
+    # Images must stay the undecoded {"bytes", "path"} mapping that
     # utils.image_utils.load_image decodes one-at-a-time at collate time.
     assert isinstance(splits["train"][0].image, dict)
+
+
+def test_training_never_builds_the_arrow_cache():
+    """With no cache, training must build in memory -- never via build_and_cache.
+
+    build_and_cache converts every split into a DatasetDict (copying each image's
+    bytes through Dataset.from_list and again through cast_column) and then
+    save_to_disk streams the corpus to data/cache, which the Colab notebook
+    symlinks onto Drive. On a 12.7 GB VM already holding the 3B backbone that
+    combination exhausted host RAM immediately after "Built splits".
+    """
+    splits = _run_obtain_splits(cached=None, built_lists=_encoded_lists())
+
+    assert CALLS.get("build_and_cache", 0) == 0, "training path called build_and_cache"
+    assert CALLS.get("build_splits", 0) == 1, "training path did not use build_splits"
+    assert DECODES["n"] == 0
+    assert {k: len(v) for k, v in splits.items()} == {"train": 800, "validation": 100, "test": 100}
 
 
 def test_fake_split_would_decode_without_the_guard():

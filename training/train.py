@@ -91,12 +91,7 @@ def _obtain_splits(config: "ProjectConfig") -> dict[str, list["DocSample"]]:
     ``from_record`` so the rest of the pipeline is agnostic to how the data was
     obtained.
     """
-    from preprocessing import (
-        build_and_cache,
-        build_splits,
-        keep_images_encoded,
-        load_cached,
-    )
+    from preprocessing import build_splits, keep_images_encoded, load_cached
     from preprocessing.schema import DocSample
 
     cached = load_cached(config)
@@ -115,18 +110,50 @@ def _obtain_splits(config: "ProjectConfig") -> dict[str, list["DocSample"]]:
             for name in cached
         }
 
-    logger.info("No dataset cache found; building splits from source (and caching for reuse).")
-    try:
-        dataset_dict = build_and_cache(config)
-        return {
-            name: [DocSample.from_record(row) for row in keep_images_encoded(dataset_dict[name])]
-            for name in dataset_dict
-        }
-    except Exception:
-        # Caching (save_to_disk / Image casting) can fail on exotic environments;
-        # an in-memory build still lets training proceed, just without a cache.
-        logger.exception("build_and_cache failed; falling back to an in-memory build_splits().")
-        return build_splits(config)
+    # Build IN MEMORY and deliberately do NOT write an Arrow cache here.
+    #
+    # build_and_cache() would convert the splits into a DatasetDict, which
+    # duplicates every image's bytes twice over (to_record() dicts -> Arrow via
+    # Dataset.from_list -> again on cast_column), and then save_to_disk() streams
+    # the whole corpus to data/cache -- a directory the Colab notebook symlinks
+    # onto Google Drive, whose FUSE writes buffer in RAM. For CORD that is ~1.8 GB
+    # of encoded bytes multiplied by those copies, landing on a 12.7 GB VM that is
+    # already holding the 3B backbone. That is what killed the run immediately
+    # after "Built splits".
+    #
+    # The cache also buys nothing on this corpus: loading CORD from the hub takes
+    # ~10 seconds, versus minutes to serialize it. Callers that genuinely want a
+    # persisted DatasetDict still have preprocessing.build_and_cache (and the
+    # `make preprocess` entrypoint); the training path just does not need it.
+    logger.info("No dataset cache found; building splits in memory (no Arrow cache).")
+    splits = build_splits(config)
+    _log_image_footprint(splits)
+    return splits
+
+
+def _log_image_footprint(splits: dict[str, list["DocSample"]]) -> None:
+    """Log how many bytes of image data the splits are pinning in RAM.
+
+    Two published runs died of host-RAM exhaustion during data preparation, both
+    times because images were being held decoded or copied. Printing the resident
+    footprint makes a regression obvious in the first seconds of the log instead
+    of as an unexplained kernel death minutes later.
+    """
+    total = 0
+    for samples in splits.values():
+        for sample in samples:
+            image = sample.image
+            if isinstance(image, dict):
+                total += len(image.get("bytes") or b"")
+            elif isinstance(image, (bytes, bytearray)):
+                total += len(image)
+    if total:
+        logger.info(
+            "Dataset images resident in RAM: %.2f GB (encoded; decoded one at a time "
+            "per batch). A figure in the multiple-GB range here means something is "
+            "holding decoded pages again.",
+            total / 1024**3,
+        )
 
 
 def _final_evaluation(
